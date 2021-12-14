@@ -1,0 +1,13 @@
+# Recommend to use python >= 3.9
+gpytorch==1.5.0
+pyro-ppl==1.7.0
+torch==1.9.0
+scikit-learn==0.24.2
+pyyaml==5.4.1
+blitz-bayesian-pytorch==0.2.7
+seaborn==0.11.2
+xgboost==1.4.0
+tqdm==4.62.1
+numpy==1.21.2
+openml==0.12.2
+catboost==0.26.1
