@@ -1,44 +1,36 @@
-from catboost import CatBoostClassifier, Pool
-from sklearn.model_selection import GridSearchCV
-from sklearn.model_selection import KFold
-from sklearn.model_selection import ParameterGrid
+from tqdm import tqdm
+import time
+import random
+import os
+import argparse
+import itertools
+
+from torch import nn
+
+import priors
+from train import train, Losses
+import encoders
+from datasets import *
+from priors.utils import trunc_norm_sampler_f, gamma_sampler_f
 
 import pyro
 import pyro.distributions as dist
 from pyro.nn import PyroModule, PyroSample
 from pyro.infer.autoguide import AutoDiagonalNormal
 from pyro.infer import SVI, Trace_ELBO, Predictive, MCMC, NUTS
-from pytorch_tabnet.tab_model import TabNetClassifier, TabNetRegressor
-from sklearn.metrics import accuracy_score, roc_auc_score
-import argparse
-import itertools
 
-from train import train, get_weighted_single_eval_pos_sampler, Losses
-import priors
-import encoders
-from sklearn import preprocessing
+from catboost import CatBoostClassifier, Pool
 
+from sklearn.model_selection import GridSearchCV
+from sklearn.linear_model import LogisticRegression
 from sklearn.base import BaseEstimator, ClassifierMixin
-
-from torch import nn
-
-from datasets import *
-import xgboost as xgb
-import matplotlib.pyplot as plt
-import numpy as np
-
-import torch
 from sklearn import neighbors, datasets
 from sklearn.gaussian_process import GaussianProcessClassifier
 from sklearn.gaussian_process.kernels import RBF
+from sklearn.metrics import accuracy_score, roc_auc_score
 
-from priors.utils import trunc_norm_sampler_f, beta_sampler_f, gamma_sampler_f, uniform_sampler_f, zipf_sampler_f, scaled_beta_sampler_f, uniform_int_sampler_f
-
-from tqdm import tqdm
-import time
-import random
-
-import os
+import xgboost as xgb
+import matplotlib.pyplot as plt
 
 CV = 5
 param_grid = {}
@@ -330,35 +322,6 @@ def batch_pred(metric_function, eval_xs, eval_ys, categorical_feats, start=2):
     #     metrics_per_t.append(metric_sum/eval_xs.shape[1])
     return np.array(metrics), np.array(outputs).T
 
-## Ridge
-
-
-from sklearn.linear_model import RidgeClassifier
-# param_grid['ridge'] = {'alpha': [0, 0.1, .5, 1.0, 2.0], 'fit_intercept': [True, False]} # 'normalize': [False],
-def ridge_metric(x, y, test_x, test_y, cat_features):
-    import warnings
-    def warn(*args, **kwargs):
-        pass
-
-    warnings.warn = warn
-
-    x, y, test_x, test_y = x.cpu(), y.cpu(), test_x.cpu(), test_y.cpu()
-
-    clf = RidgeClassifier()
-
-    # create a dictionary of all values we want to test for n_neighbors
-    # use gridsearch to test all values for n_neighbors
-    clf = GridSearchCV(clf, param_grid['ridge'], cv=min(CV, x.shape[0]//2))
-    # fit model to data
-    clf.fit(x, y.long())
-
-    pred = clf.decision_function(test_x)
-    metric = metric_used(test_y.cpu().numpy(), pred)
-
-    return metric, pred
-
-
-from sklearn.linear_model import LogisticRegression
 param_grid['logistic'] = {'solver': ['saga'], 'penalty': ['l1', 'l2', 'none'], 'tol': [1e-2, 1e-4, 1e-10], 'max_iter': [500], 'fit_intercept': [True, False], 'C': [1e-5, 0.001, 0.01, 0.1, 1.0, 2.0]} # 'normalize': [False],
 def logistic_metric(x, y, test_x, test_y, cat_features):
     import warnings
@@ -542,60 +505,59 @@ def gp_metric(x, y, test_x, test_y, cat_features):
 
 ## Tabnet
 # https://github.com/dreamquark-ai/tabnet
-param_grid['tabnet'] = {'n_d': [2, 4], 'n_steps': [2,4,6], 'gamma': [1.3], 'optimizer_params': [{'lr': 2e-2}, {'lr': 2e-1}]}
-#param_grid['tabnet'] = {'n_d': [2], 'n_steps': [2], 'optimizer_params': [{'lr': 2e-2}, {'lr': 2e-1}]}
-def tabnet_metric(x, y, test_x, test_y, cat_features):
-    x, y, test_x, test_y = x.cpu().numpy(), y.cpu().numpy(), test_x.cpu().numpy(), test_y.cpu().numpy()
-
-    mean_metrics = []
-    mean_best_epochs = []
-
-    for params in list(ParameterGrid(param_grid['tabnet'])):
-        kf = KFold(n_splits=min(5, x.shape[0]//2), random_state=None, shuffle=False)
-        metrics = []
-        best_epochs = []
-        for train_index, test_index in kf.split(x):
-            X_train, X_valid, y_train, y_valid = x[train_index], x[test_index], y[train_index], y[test_index]
-
-            clf = TabNetClassifier(verbose=True, cat_idxs=cat_features, n_a=params['n_d'], **params)
-
-            clf.fit(
-                X_train, y_train,
-                #eval_set=[(X_valid, y_valid)], patience=15
-            )
-
-            metric = metric_used(test_y.cpu().numpy(), clf.predict(X_valid))
-            metrics += [metric]
-            #best_epochs += [clf.best_epoch]
-        mean_metrics += [np.array(metrics).mean()]
-        #mean_best_epochs += [np.array(best_epochs).mean().astype(int)]
-
-    mean_metrics = np.array(mean_metrics)
-    #mean_best_epochs = np.array(mean_best_epochs)
-    params_used = np.array(list(ParameterGrid(param_grid['tabnet'])))
-
-    best_idx = np.argmax(mean_metrics)
-    #print(params_used[best_idx])
-    clf = TabNetClassifier(cat_idxs=cat_features, **params_used[best_idx])
-
-    clf.fit(
-        x, y#, max_epochs=mean_best_epochs[best_idx]
-    )
-
-    pred = 1 - clf.predict_proba(test_x)[:,0]
-    metric = metric_used(test_y, pred)
-
-    #print(metric, clf.predict(test_x), pred)
-
-    return metric, pred
+# param_grid['tabnet'] = {'n_d': [2, 4], 'n_steps': [2,4,6], 'gamma': [1.3], 'optimizer_params': [{'lr': 2e-2}, {'lr': 2e-1}]}
+# #param_grid['tabnet'] = {'n_d': [2], 'n_steps': [2], 'optimizer_params': [{'lr': 2e-2}, {'lr': 2e-1}]}
+# def tabnet_metric(x, y, test_x, test_y, cat_features):
+#     x, y, test_x, test_y = x.cpu().numpy(), y.cpu().numpy(), test_x.cpu().numpy(), test_y.cpu().numpy()
+#
+#     mean_metrics = []
+#     mean_best_epochs = []
+#
+#     for params in list(ParameterGrid(param_grid['tabnet'])):
+#         kf = KFold(n_splits=min(5, x.shape[0]//2), random_state=None, shuffle=False)
+#         metrics = []
+#         best_epochs = []
+#         for train_index, test_index in kf.split(x):
+#             X_train, X_valid, y_train, y_valid = x[train_index], x[test_index], y[train_index], y[test_index]
+#
+#             clf = TabNetClassifier(verbose=True, cat_idxs=cat_features, n_a=params['n_d'], **params)
+#
+#             clf.fit(
+#                 X_train, y_train,
+#                 #eval_set=[(X_valid, y_valid)], patience=15
+#             )
+#
+#             metric = metric_used(test_y.cpu().numpy(), clf.predict(X_valid))
+#             metrics += [metric]
+#             #best_epochs += [clf.best_epoch]
+#         mean_metrics += [np.array(metrics).mean()]
+#         #mean_best_epochs += [np.array(best_epochs).mean().astype(int)]
+#
+#     mean_metrics = np.array(mean_metrics)
+#     #mean_best_epochs = np.array(mean_best_epochs)
+#     params_used = np.array(list(ParameterGrid(param_grid['tabnet'])))
+#
+#     best_idx = np.argmax(mean_metrics)
+#     #print(params_used[best_idx])
+#     clf = TabNetClassifier(cat_idxs=cat_features, **params_used[best_idx])
+#
+#     clf.fit(
+#         x, y#, max_epochs=mean_best_epochs[best_idx]
+#     )
+#
+#     pred = 1 - clf.predict_proba(test_x)[:,0]
+#     metric = metric_used(test_y, pred)
+#
+#     #print(metric, clf.predict(test_x), pred)
+#
+#     return metric, pred
 
 
 # Catboost
 param_grid['catboost'] = {'learning_rate': [0.1, 0.5, 1.0],
             'depth': [2, 4, 7],
             'l2_leaf_reg': [0.0, 0.5, 1],
-            'iterations': [10, 40, 70],
-                          'loss_function': ['Logloss']}
+            'iterations': [10, 40, 70]}
 def catboost_metric(x, y, test_x, test_y, categorical_feats):
     import warnings
     def warn(*args, **kwargs):
@@ -629,7 +591,7 @@ def catboost_metric(x, y, test_x, test_y, categorical_feats):
 
     # model.fit(x, y)
     pred = model.predict_proba(test_x)[:, 1]
-    metric = metric_used(test_y.cpu().numpy(), pred)
+    metric = metric_used(test_y, pred)
 
     return metric, pred
 
@@ -673,7 +635,7 @@ def get_default_spec(test_datasets, valid_datasets):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--method', default='ridge', type=str)
+    parser.add_argument('--method', default='knn', type=str)
     parser.add_argument('--did', default=-1, type=int)
     parser.add_argument('--overwrite', default=False, type=bool)
     args = parser.parse_args()
@@ -694,17 +656,11 @@ if __name__ == '__main__':
     elif args.method == 'gp':
         clf = gp_metric
         device = 'cpu'
-    elif args.method == 'ridge':
-        clf = ridge_metric
-        device = 'cpu'
     elif args.method == 'knn':
         clf = knn_metric
         device = 'cpu'
     elif args.method == 'catboost':
         clf = catboost_metric
-        device = 'cpu'
-    elif args.method == 'tabnet':
-        clf = tabnet_metric
         device = 'cpu'
     elif args.method == 'xgb':
         # Uses lots of cpu so difficult to time

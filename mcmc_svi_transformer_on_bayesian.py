@@ -1,15 +1,20 @@
-import scipy.stats as st
-from train import Losses
 import argparse
-
+import os.path
+import glob
 import os
-
 from tqdm import tqdm
 import time
 
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+import scipy.stats as st
+
+from train import train, get_weighted_single_eval_pos_sampler
+import priors
+import encoders
+from train import Losses
 
 import pyro
 import pyro.distributions as dist
@@ -18,54 +23,7 @@ import torch.nn as nn
 from pyro.infer.autoguide import AutoDiagonalNormal
 from pyro.infer import SVI, Trace_ELBO, Predictive, MCMC, NUTS
 from pyro import infer
-import matplotlib.gridspec as gridspec
-import os.path
-import glob
-from train import train, get_weighted_single_eval_pos_sampler
-import priors
-import encoders
 from pyro.infer import SVGD, RBFSteinKernel
-
-class CausalModel(PyroModule):
-    def __init__(self, model_spec, device='cuda'):
-        super().__init__()
-
-        self.device = device
-        self.num_features = model_spec['num_features']
-
-        mu, sigma = torch.tensor([0.0]).to(self.device), torch.tensor([1.0]).to(self.device)
-
-        self.fc1 = PyroModule[nn.Linear](self.num_features, model_spec['embed'])
-        self.drop = pyro.sample('drop', dist.Categorical(probs=torch.tensor([0.5, 0.5]).expand([model_spec['embed'], self.num_features, 2]))).float()
-        self.fc1.weight = PyroSample(dist.Normal(mu, 0.0000001+self.drop).expand([model_spec['embed'], self.num_features]).to_event(2))
-        self.fc1.bias = PyroSample(dist.Normal(mu, sigma).expand([model_spec['embed']]).to_event(1))
-
-        self.fc2 = PyroModule[nn.Linear](model_spec['embed'], 2)
-        self.fc2.weight = PyroSample(dist.Normal(mu, sigma).expand([2, model_spec['embed']]).to_event(2))
-        self.fc2.bias = PyroSample(dist.Normal(mu, sigma).expand([2]).to_event(1))
-
-        self.model = torch.nn.Sequential(self.fc1, self.fc2)
-
-        self.to(self.device)
-
-    def forward(self, x=None, y=None, seq_len=1):
-        if x is None:
-            with pyro.plate("x_plate", seq_len):
-                d_ = dist.Normal(torch.tensor([0.0]).to(self.device), torch.tensor([1.0]).to(self.device)).expand(
-                    [self.num_features]).to_event(1)
-                x = pyro.sample("x", d_)
-
-        out = self.model(x)
-        mu = out.squeeze()
-        softmax = torch.nn.Softmax(dim=1)
-        # sigma = pyro.sample("sigma", dist.Uniform(torch.tensor([0.0]).to(self.device), torch.tensor([1.0]).to(self.device)))
-        with pyro.plate("data", out.shape[0]):
-            # d_ = dist.Normal(mu, sigma)
-            # obs = pyro.sample("obs", d_, obs=y)
-            s = softmax(mu)
-            obs = pyro.sample('obs', dist.Categorical(probs=s), obs=y).float()
-
-        return x, obs
 
 class BayesianModel(PyroModule):
     def __init__(self, model_spec, device='cuda'):
@@ -187,7 +145,7 @@ def load_results(path, task='steps'):
     times = []
     samples_list = []
 
-    files = glob.glob(f'/home/anon/prior-fitting/{path}_*.npy')
+    files = glob.glob(f'{path}_*.npy')
     for file in files:
         print(file)
         with open(file, 'rb') as f:
@@ -336,7 +294,7 @@ def eval_transformer(X, y, device, model, training_samples_n):
 def training_steps(method, X, y, model_spec, device='cpu', path_interfix='', overwrite=False):
     training_samples_n = 100
     for s in [2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096]:
-        path = f'/home/anon/prior-fitting/{path_interfix}/results_{method}_training_steps_{s}.npy'
+        path = f'{path_interfix}/results_{method}_training_steps_{s}.npy'
         if (os.path.isfile(path)) and not overwrite:
             print(f'already done {s}')
             continue
@@ -371,7 +329,7 @@ def training_samples(method, X, y, model_spec, evaluation_points, steps = None, 
     num_pred_samples = num_pred_samples_svi if method == 'svi' else num_pred_samples_mcmc
 
     for training_samples_n in evaluation_points:
-        path = f'/home/anon/prior-fitting/{path_interfix}/results_{method}_{num_pred_samples}_training_samples_{training_samples_n}.npy'
+        path = f'{path_interfix}/results_{method}_{num_pred_samples}_training_samples_{training_samples_n}.npy'
         if (os.path.isfile(path)) and not overwrite:
             print(f'already done {training_samples_n}')
             continue
