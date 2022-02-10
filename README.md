@@ -6,3 +6,42 @@ You can play with our model in an interactive [demo](https://huggingface.co/spac
 For insights into experiments, please see our `notebooks` folder. From where most experiments, besides some baselines are started.
 
 Training the transformers can be quickly done for all tasks considered, but we still provide models for the tabular tasks as convenience to be able solve new tabular tasks out-of-the-box.
+
+
+__Training a custom prior__
+
+notebooks/BayesianModels_And_Custom_Pyro_Modules.ipynb provides a workflow to train and evaluate a PFN model with a custom prior. A prior is defined by providing a sampling procedure as a PyroModule. A prior template can be found in this notebook.
+
+Below we show an overview of training a PFN. A full example can be found in BayesianModels_And_Custom_Pyro_Modules.ipynb.
+```
+class CustomModel(PyroModule):
+    def __init__(self, device='cuda'):
+        super().__init__()
+
+        self.model = model_spec()
+
+    def forward(self, seq_len=1):
+        with pyro.plate("x_plate", seq_len):
+            d_ = dist.Normal(torch.tensor([0.0]).to(self.device), torch.tensor([1.0]).to(self.device)).expand(
+                [self.num_features]).to_event(1)
+            x = pyro.sample("x", d_)
+
+        out = self.model(x)
+        
+        return x, out
+```
+
+```
+# Function which generates a model from the prior
+model_sampler = lambda : BayesianModel(model_spec, device = device)
+```
+
+```
+config = {'lr': 2.006434218345026e-05, 'epochs': 160}
+
+transformer_model = get_model(model_sampler, config, should_train = True)
+```
+
+__Evaluating Tabular Models__
+
+notebooks/TabularEvalSimple.ipynb provides a workflow to evaluate baselines and the transformer on the balanced subset of the AutoML Benchmark (filtered by Nans, number of features).
