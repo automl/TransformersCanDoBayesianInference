@@ -12,7 +12,7 @@ __Training a custom prior__
 
 notebooks/BayesianModels_And_Custom_Pyro_Modules.ipynb provides a workflow to train and evaluate a PFN model with a custom prior. A prior is defined by providing a sampling procedure as a PyroModule. A prior template can be found in this notebook.
 
-Below we show an overview of training a PFN. A full example can be found in BayesianModels_And_Custom_Pyro_Modules.ipynb.
+Below we show an overview of training a PFN for a custom prior. A full example can be found in BayesianModels_And_Custom_Pyro_Modules.ipynb.
 ```
 class CustomModel(PyroModule):
     def __init__(self, device='cuda'):
