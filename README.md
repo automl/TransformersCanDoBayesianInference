@@ -8,6 +8,22 @@ For insights into experiments, please see our `notebooks` folder. From where mos
 Training the transformers can be quickly done for all tasks considered, but we still provide models for the tabular tasks as convenience to be able solve new tabular tasks out-of-the-box.
 
 
+__Getting Started__
+
+This is a python project, we used Python 3.9 in development and recommend to use a `virtualenv` or `conda`.
+To use our code, clone the project with
+
+```
+git clone git@github.com:automl/TransformersCanDoBayesianInference.git
+```
+
+install all dependencies with
+
+```
+pip install -r requirements.txt
+```
+
+
 __Training a custom prior__
 
 notebooks/BayesianModels_And_Custom_Pyro_Modules.ipynb provides a workflow to train and evaluate a PFN model with a custom prior. A prior is defined by providing a sampling procedure as a PyroModule. A prior template can be found in this notebook.
