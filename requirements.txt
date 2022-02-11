@@ -11,3 +11,5 @@ tqdm==4.62.1
 numpy==1.21.2
 openml==0.12.2
 catboost==0.26.1
+botorch==0.6.0
+jupyter
