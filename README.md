@@ -26,9 +26,13 @@ pip install -r requirements.txt
 ```
 
 
-__Training a custom prior__
+__Reproducing the GP results__
+You can have a look at [notebooks/SetupForGPFittingExperiments.ipynb](notebooks/SetupForGPFittingExperiments.ipynb). The hyper-paramters are chosen to reproduce figure 3 a). If you want to consider smaller datasets reduce `bptt` and the max number of training samples provided in `utils.get_weighted_single_eval_pos_sampler`.
 
-notebooks/BayesianModels_And_Custom_Pyro_Modules.ipynb provides a workflow to train and evaluate a PFN model with a custom prior. A prior is defined by providing a sampling procedure as a PyroModule. A prior template can be found in this notebook.
+
+__Training a model with a custom prior__
+
+[notebooks/BayesianModels_And_Custom_Pyro_Modules.ipynb](notebooks/BayesianModels_And_Custom_Pyro_Modules.ipynb) provides a workflow to train and evaluate a PFN model with a custom prior. A prior is defined by providing a sampling procedure as a PyroModule. A prior template can be found in this notebook.
 
 Below we show an overview of training a PFN for a custom prior. A full example can be found in BayesianModels_And_Custom_Pyro_Modules.ipynb.
 ```
@@ -62,4 +66,4 @@ transformer_model = get_model(model_sampler, config, should_train = True)
 
 __Evaluating Tabular Models__
 
-notebooks/TabularEvalSimple.ipynb provides a workflow to evaluate baselines and the transformer on the balanced subset of the AutoML Benchmark (filtered by Nans, number of features).
+`notebooks/TabularEvalSimple.ipynb` provides a workflow to evaluate baselines and the transformer on the balanced subset of the AutoML Benchmark (filtered by Nans, number of features).
