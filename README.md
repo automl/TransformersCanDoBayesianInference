@@ -27,6 +27,7 @@ pip install -r requirements.txt
 
 
 __Reproducing the GP results__
+
 You can have a look at [notebooks/SetupForGPFittingExperiments.ipynb](notebooks/SetupForGPFittingExperiments.ipynb). The hyper-paramters are chosen to reproduce figure 3 a). If you want to consider smaller datasets reduce `bptt` and the max number of training samples provided in `utils.get_weighted_single_eval_pos_sampler`.
 
 
