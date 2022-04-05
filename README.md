@@ -66,4 +66,4 @@ transformer_model = get_model(model_sampler, config, should_train = True)
 
 __Evaluating Tabular Models__
 
-`notebooks/TabularEvalSimple.ipynb` provides a workflow to evaluate baselines and the transformer on the balanced subset of the AutoML Benchmark (filtered by Nans, number of features).
+[notebooks/TabularEvalSimple.ipynb](notebooks/TabularEvalSimple.ipynb) provides a workflow to evaluate baselines and the transformer on the balanced subset of the AutoML Benchmark (filtered by Nans, number of features).
