@@ -1,4 +1,4 @@
-## The Official Code for the Paper "Transformers Can Do Bayesian Inference"
+## Official Code for the Paper [Transformers Can Do Bayesian Inference](https://arxiv.org/abs/2112.10510)
 
 <img width="600" alt="Screen Shot 2022-02-15 at 19 32 22" src="https://user-images.githubusercontent.com/9828297/154126371-d54af7b8-a997-426d-838f-eeaf590c2276.png">
 
@@ -68,3 +68,14 @@ transformer_model = get_model(model_sampler, config, should_train = True)
 __Evaluating Tabular Models__
 
 [notebooks/TabularEvalSimple.ipynb](notebooks/TabularEvalSimple.ipynb) provides a workflow to evaluate baselines and the transformer on the balanced subset of the AutoML Benchmark (filtered by Nans, number of features).
+
+__Cite__
+
+```
+@inproceedings{muller2021transformers,
+  title={Transformers Can Do Bayesian Inference},
+  author={M{\"u}ller, Samuel and Hollmann, Noah and Arango, Sebastian Pineda and Grabocka, Josif and Hutter, Frank},
+  booktitle={International Conference on Learning Representations},
+  year={2021}
+}
+```
