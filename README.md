@@ -72,10 +72,12 @@ __Evaluating Tabular Models__
 __Cite__
 
 ```
-@inproceedings{muller2021transformers,
-  title={Transformers Can Do Bayesian Inference},
-  author={M{\"u}ller, Samuel and Hollmann, Noah and Arango, Sebastian Pineda and Grabocka, Josif and Hutter, Frank},
-  booktitle={International Conference on Learning Representations},
-  year={2021}
+@inproceedings{
+muller2022transformers,
+title={Transformers Can Do Bayesian Inference},
+author={Samuel M{\"u}ller and Noah Hollmann and Sebastian Pineda Arango and Josif Grabocka and Frank Hutter},
+booktitle={International Conference on Learning Representations},
+year={2022},
+url={https://openreview.net/forum?id=KSugKcbNf9}
 }
 ```
