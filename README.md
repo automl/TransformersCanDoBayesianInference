@@ -73,11 +73,11 @@ __Cite__
 
 ```
 @inproceedings{
-muller2022transformers,
-title={Transformers Can Do Bayesian Inference},
-author={Samuel M{\"u}ller and Noah Hollmann and Sebastian Pineda Arango and Josif Grabocka and Frank Hutter},
-booktitle={International Conference on Learning Representations},
-year={2022},
-url={https://openreview.net/forum?id=KSugKcbNf9}
+    muller2022transformers,
+    title={Transformers Can Do Bayesian Inference},
+    author={Samuel M{\"u}ller and Noah Hollmann and Sebastian Pineda Arango and Josif Grabocka and Frank Hutter},
+    booktitle={International Conference on Learning Representations},
+    year={2022},
+    url={https://openreview.net/forum?id=KSugKcbNf9}
 }
 ```
