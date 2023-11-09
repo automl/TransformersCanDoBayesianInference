@@ -2,6 +2,8 @@
 
 <img width="600" alt="Screen Shot 2022-02-15 at 19 32 22" src="https://user-images.githubusercontent.com/9828297/154126371-d54af7b8-a997-426d-838f-eeaf590c2276.png">
 
+_DISCLAIMER: NOT MAINTAINED. While this is the code we used to run our experiments in the paper. We recommend our newer, maintained codebase https://github.com/automl/PFNs if you want to work on PFNs._
+
 We train Transformers to do Bayesian Prediction on novel datasets for a large variety of priors. For more info read our [paper](https://arxiv.org/abs/2112.10510).
 You can play with our model in an interactive [demo](https://huggingface.co/spaces/samuelinferences/transformers-can-do-bayesian-inference) with a GP prior and compare it to the ground truth GP posterior, as described in the paper's section 5.1.
 
