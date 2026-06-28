@@ -1,0 +1,5 @@
+{
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+    "jupyter.kernels.filter": [],
+    "notebook.defaultFormatter": "ms-python.python"
+}
