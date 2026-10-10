@@ -1,0 +1,28 @@
+[project]
+name = "transformers-can-do-bayesian-inference"
+version = "0.1.0"
+description = "Prior-Fitted Networks (PFNs) - code for 'Transformers Can Do Bayesian Inference' (ICLR 2022), updated to recent library versions."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+# Latest versions as of 2026-10. The original paper pins are kept in requirements.txt.
+# On Apple Silicon the default PyPI torch wheel includes the MPS (Metal GPU) backend.
+dependencies = [
+    "torch>=2.14.1",
+    "gpytorch>=1.15.2",
+    "pyro-ppl>=1.9.2",
+    "scikit-learn>=1.9.1",
+    "pyyaml>=6.0.3",
+    "blitz-bayesian-pytorch>=0.2.8",
+    "seaborn>=0.13.2",
+    "xgboost>=3.4.1",
+    "tqdm>=4.70.1",
+    "numpy>=2.5.3",
+    "openml>=0.15.1",
+    "catboost>=1.2.10",
+    "botorch>=0.18.1",
+    "jupyter>=1.1.1",
+]
+
+[tool.uv]
+package = false
+
