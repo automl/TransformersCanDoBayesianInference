@@ -26,6 +26,9 @@ from pyro import infer
 from pyro.infer import SVGD, RBFSteinKernel
 
 class BayesianModel(PyroModule):
+    # WARNING: device='cuda' is hard-coded as default and fails on machines without an NVIDIA GPU
+    # (e.g. Apple Silicon). Pass device='mps' or 'cpu' explicitly, or use `utils.get_default_device()`.
+    # Note: MPS does not support float64.
     def __init__(self, model_spec, device='cuda'):
         super().__init__()
 
@@ -83,6 +86,8 @@ def get_transformer_config(model_spec):
         , 'nhid_factor': 2}
 
 
+# WARNING: device='cuda' is hard-coded as default and fails without an NVIDIA GPU (e.g. Apple Silicon).
+# Pass device='mps' or 'cpu' explicitly, or use `utils.get_default_device()`.
 def get_model(model_generator, config, should_train=True, device='cuda'):
     epochs = 0 if not should_train else config['epochs']
 
@@ -382,6 +387,7 @@ if __name__ == '__main__':
 
     model_spec = get_default_model_spec(args.model_size)
     evaluation_points = get_default_evaluation_points()
+    # WARNING: hard-coded 'cuda:0' for SVI; fails without an NVIDIA GPU. On Apple Silicon use 'mps' or 'cpu'.
     device = 'cuda:0' if args.solver == 'svi' else 'cpu'
 
     torch.manual_seed(0)

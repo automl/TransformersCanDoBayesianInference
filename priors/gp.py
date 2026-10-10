@@ -8,13 +8,16 @@ from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF, DotProduct, WhiteKernel
 from .utils import get_batch_to_dataloader
 
-
 length_scale_sampling_gp = .6
+
 
 def get_gp(length_scale=None):
     return GaussianProcessRegressor(
-        kernel=RBF(length_scale=length_scale or length_scale_sampling_gp, length_scale_bounds='fixed'),
-        random_state=0, optimizer=None)
+        kernel=RBF(
+            length_scale=length_scale or length_scale_sampling_gp,
+            length_scale_bounds='fixed'),
+        random_state=0,
+        optimizer=None)
 
 
 def get_batch(batch_size, seq_len, num_features, noisy_std=None):
@@ -38,6 +41,7 @@ def get_batch(batch_size, seq_len, num_features, noisy_std=None):
 DataLoader = get_batch_to_dataloader(get_batch)
 DataLoader.num_outputs = 1
 
+
 def evaluate(x, y, y_non_noisy, use_mse=False, length_scale=length_scale_sampling_gp):
     start_time = time.time()
     losses_after_t = [.0]
@@ -56,10 +60,10 @@ def evaluate(x, y, y_non_noisy, use_mse=False, length_scale=length_scale_samplin
                       var=torch.tensor(stds) ** 2)
             loss_sum += l
 
-
         losses_after_t.append(loss_sum / x.shape[1])
 
-    return torch.tensor(losses_after_t), time.time()-start_time
+    return torch.tensor(losses_after_t), time.time() - start_time
+
 
 if __name__ == '__main__':
     ls = .1

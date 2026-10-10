@@ -1,0 +1,3 @@
+At the start of every conversation, read .github/memory/summary.md to recall the current state of the project.
+
+At the end of every conversation that involves code changes, new files, or significant design decisions, update .github/memory/summary.md (in the repository root) with a summary of what was introduced or changed. The file should contain only codebase-related content — no personal remarks. Short conversations that are purely informational or unrelated to the codebase can be skipped.

@@ -371,6 +371,9 @@ def knn_metric(x, y, test_x, test_y, cat_features):
 
 ## Bayesian NN
 class BayesianModel(PyroModule):
+    # WARNING: device='cuda' is hard-coded as default and fails on machines without an NVIDIA GPU
+    # (e.g. Apple Silicon). Pass device='mps' or 'cpu' explicitly, or use `utils.get_default_device()`.
+    # Note: MPS does not support float64.
     def __init__(self, model_spec, device='cuda'):
         super().__init__()
 

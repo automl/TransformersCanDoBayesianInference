@@ -92,7 +92,24 @@ def set_locals_in_self(locals):
         if var_name != 'self': setattr(self, var_name, val)
 
 
-default_device = 'cuda:0' if torch.cuda.is_available() else 'cpu:0'
+def get_default_device():
+    """Return the best available device: CUDA (NVIDIA), then MPS (Apple Silicon GPU), then CPU.
+
+    WARNING (MPS / Apple Silicon):
+      - MPS does not support float64. GP code (gpytorch Cholesky) may become numerically unstable
+        for very small noise levels (e.g. noise=1e-4) and raise NotPSD/jitter warnings or errors.
+        If that happens, sample the GP prior on CPU by passing device='cpu' to `get_batch`.
+      - Some ops are not implemented on MPS; set PYTORCH_ENABLE_MPS_FALLBACK=1 to fall back to CPU.
+      - Several modules still hard-code device='cuda' (see `tabular.py`, `mcmc_svi_transformer_on_bayesian.py`).
+    """
+    if torch.cuda.is_available():
+        return 'cuda:0'
+    if getattr(torch.backends, 'mps', None) is not None and torch.backends.mps.is_available():
+        return 'mps'
+    return 'cpu:0'
+
+
+default_device = get_default_device()
 
 
 # Copied from StackOverflow, but we do an eval on the values additionally

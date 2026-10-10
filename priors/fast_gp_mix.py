@@ -8,8 +8,14 @@ import torch
 from torch import nn
 import gpytorch
 from botorch.models import SingleTaskGP
-from botorch.models.gp_regression import MIN_INFERRED_NOISE_LEVEL
-from botorch.fit import fit_gpytorch_model
+try:  # botorch >= 0.9
+    from botorch.models.utils.gpytorch_modules import MIN_INFERRED_NOISE_LEVEL
+except ImportError:  # older botorch
+    from botorch.models.gp_regression import MIN_INFERRED_NOISE_LEVEL
+try:  # botorch >= 0.8 (fit_gpytorch_model was removed)
+    from botorch.fit import fit_gpytorch_mll as fit_gpytorch_model
+except ImportError:  # older botorch
+    from botorch.fit import fit_gpytorch_model
 from gpytorch.mlls import ExactMarginalLogLikelihood
 from gpytorch.likelihoods import GaussianLikelihood
 from gpytorch.priors.torch_priors import GammaPrior
@@ -22,7 +28,8 @@ from .utils import get_batch_to_dataloader
 from . import fast_gp
 
 def get_model(x, y, hyperparameters: dict, sample=True):
-    aug_batch_shape = SingleTaskGP(x,y.unsqueeze(-1))._aug_batch_shape
+    # outcome_transform=None keeps the original behaviour (newer botorch standardizes y by default)
+    aug_batch_shape = SingleTaskGP(x,y.unsqueeze(-1), outcome_transform=None)._aug_batch_shape
     noise_prior = GammaPrior(hyperparameters.get('noise_concentration',1.1), hyperparameters.get('noise_rate',0.05))
     noise_prior_mode = (noise_prior.concentration - 1) / noise_prior.rate
     likelihood = GaussianLikelihood(
@@ -44,7 +51,7 @@ def get_model(x, y, hyperparameters: dict, sample=True):
                             ),
                             batch_shape=aug_batch_shape,
                             outputscale_prior=gpytorch.priors.GammaPrior(hyperparameters.get('outputscale_concentration',.5), hyperparameters.get('outputscale_rate',0.15)),
-                        ), likelihood=likelihood)
+                        ), likelihood=likelihood, outcome_transform=None)
 
     likelihood = model.likelihood
     if sample:
@@ -56,6 +63,9 @@ def get_model(x, y, hyperparameters: dict, sample=True):
 
 
 @torch.no_grad()
+# WARNING: `default_device` is 'mps' on Apple Silicon. MPS has no float64 support, so GP prior sampling
+# can be numerically unstable for very small noise. If you see NotPSD/jitter warnings or errors,
+# pass device='cpu' here.
 def get_batch(batch_size, seq_len, num_features, device=default_device, hyperparameters=None,
               batch_size_per_gp_sample=None, num_outputs=1,
               fix_to_range=None, equidistant_x=False):

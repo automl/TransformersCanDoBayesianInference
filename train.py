@@ -6,7 +6,7 @@ import torch
 from torch import nn
 from transformer import TransformerModel
 from bar_distribution import BarDistribution, FullSupportBarDistribution, get_bucket_limits
-from utils import get_cosine_schedule_with_warmup, get_openai_lr, StoreDictKeyPair, get_weighted_single_eval_pos_sampler, get_uniform_single_eval_pos_sampler
+from utils import get_cosine_schedule_with_warmup, get_openai_lr, StoreDictKeyPair, get_weighted_single_eval_pos_sampler, get_uniform_single_eval_pos_sampler, get_default_device
 import priors
 import encoders
 import positional_encodings
@@ -26,7 +26,10 @@ def train(priordataloader_class, criterion, encoder_generator, emsize=200, nhid=
           aggregate_k_gradients=1, verbose=True
           ):
 
-    device = gpu_device if torch.cuda.is_available() else 'cpu:0'
+    if gpu_device is None or (str(gpu_device).startswith('cuda') and not torch.cuda.is_available()):
+        device = get_default_device()
+    else:
+        device = gpu_device
     print(f'Using {device} device')
     dl = priordataloader_class(num_steps=steps_per_epoch, batch_size=batch_size, seq_len=bptt, **extra_prior_kwargs_dict)
 

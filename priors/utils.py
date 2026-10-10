@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import scipy.stats as stats
 
+
 def get_batch_to_dataloader(get_batch_method_):
     class DL(PriorDataLoader):
         get_batch_method = get_batch_method_
@@ -38,7 +39,6 @@ def get_batch_to_dataloader(get_batch_method_):
         def __iter__(self):
             return iter(self.gbm(**self.get_batch_kwargs, fuse_x_y=self.fuse_x_y) for _ in range(self.num_steps))
 
-
     return DL
 
 
@@ -61,13 +61,16 @@ def plot_prior(prior):
     print(s.min())
     plt.show()
 
-trunc_norm_sampler_f = lambda mu, sigma : lambda: stats.truncnorm((0 - mu) / sigma, (1 - mu) / sigma, loc=mu, scale=sigma).rvs(1)[0]
-beta_sampler_f = lambda a, b : lambda : np.random.beta(a, b)
-gamma_sampler_f = lambda a, b : lambda : np.random.gamma(a, b)
-uniform_sampler_f = lambda a, b : lambda : np.random.uniform(a, b)
-uniform_int_sampler_f = lambda a, b : lambda : np.random.randint(a, b)
-zipf_sampler_f = lambda a, b, c : lambda : min(b + np.random.zipf(a), c)
-scaled_beta_sampler_f = lambda a, b, scale, minimum : lambda : minimum + round(beta_sampler_f(a, b)() * (scale - minimum + 1) - 0.5)
+
+trunc_norm_sampler_f = lambda mu, sigma: lambda: \
+stats.truncnorm((0 - mu) / sigma, (1 - mu) / sigma, loc=mu, scale=sigma).rvs(1)[0]
+beta_sampler_f = lambda a, b: lambda: np.random.beta(a, b)
+gamma_sampler_f = lambda a, b: lambda: np.random.gamma(a, b)
+uniform_sampler_f = lambda a, b: lambda: np.random.uniform(a, b)
+uniform_int_sampler_f = lambda a, b: lambda: np.random.randint(a, b)
+zipf_sampler_f = lambda a, b, c: lambda: min(b + np.random.zipf(a), c)
+scaled_beta_sampler_f = lambda a, b, scale, minimum: lambda: minimum + round(
+    beta_sampler_f(a, b)() * (scale - minimum + 1) - 0.5)
 
 
 def normalize_data(data):
@@ -93,10 +96,8 @@ class Binarize(nn.Module):
 
 def order_by_y(x, y):
     order = torch.argsort(y if random.randint(0, 1) else -y, dim=0)[:, 0, 0]
-    order = order.reshape(2, -1).transpose(0, 1).reshape(-1)#.reshape(seq_len)
+    order = order.reshape(2, -1).transpose(0, 1).reshape(-1)  # .reshape(seq_len)
     x = x[order]  # .reshape(2, -1).transpose(0, 1).reshape(-1).flip([0]).reshape(seq_len, 1, -1)
     y = y[order]  # .reshape(2, -1).transpose(0, 1).reshape(-1).reshape(seq_len, 1, -1)
 
     return x, y
-
-
