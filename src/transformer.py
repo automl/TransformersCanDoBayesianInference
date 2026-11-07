@@ -13,28 +13,44 @@ from .utils import SeqBN
 
 
 class TransformerModel(nn.Module):
+    """PFN predicting a Gaussian `N(mean, var)` for every query point.
+
+    The decoder produces two raw values per query point: the mean and an unconstrained value that is
+    mapped to the variance via `softplus(raw) + min_var` (smooth, positive, ~0.69 at init).
+
+    :param decoder: optional factory `decoder(ninp, nhid, n_out)` with `n_out = 2`; default is an MLP
+    :param min_var: lower bound added to the predicted variance for numerical stability
+
+    Attribute `criterion`: `nn.GaussianNLLLoss(reduction='none', full=True)`, called as
+    `criterion(mean, target, var=var)`.
+    """
+    n_out = 2  # mean and (raw) variance
+
     def __init__(
             self,
-            encoder, n_out, ninp, nhead, nhid, nlayers,
+            encoder, ninp, nhead, nhid, nlayers,
             dropout=0.0,
             y_encoder=None, pos_encoder=None, decoder=None,
-            input_normalization=False
+            input_normalization=False, min_var=1e-6
     ):
         super().__init__()
         self.model_type = 'Transformer'
         encoder_layers = TransformerEncoderLayer(ninp, nhead, nhid, dropout, activation='gelu')
         self.transformer_encoder = TransformerEncoder(encoder_layers, nlayers)
         self.ninp = ninp
+        self.min_var = min_var
         self.encoder = encoder
         self.y_encoder = y_encoder
         self.pos_encoder = pos_encoder
         self.decoder = (
-            decoder(ninp, nhid, n_out) if decoder is not None
+            decoder(ninp, nhid, self.n_out) if decoder is not None
             else nn.Sequential(nn.Linear(ninp, nhid),
                                nn.GELU(),
-                               nn.Linear(nhid, n_out))
+                               nn.Linear(nhid, self.n_out))
         )
         self.input_ln = SeqBN(ninp) if input_normalization else None
+        # Loss matching the predicted Gaussian; per-element losses, incl. the constant term.
+        self.criterion = nn.GaussianNLLLoss(reduction='none', full=True)
 
         self.init_weights()
 
@@ -62,7 +78,8 @@ class TransformerModel(nn.Module):
         :param src: tuple `(x, y)` with x: (seq_len, batch_size, num_features), y: (seq_len, batch_size)
         :param src_mask: optional attention mask; defaults to `generate_D_q_matrix`
         :param single_eval_pos: number of training (context) positions; positions from here on are queries
-        :return: decoder output for the query positions, shape (seq_len - single_eval_pos, batch_size, n_out)
+        :return: `(mean, var)` of the predictive distribution at the query positions,
+            each of shape (seq_len - single_eval_pos, batch_size)
         """
         assert single_eval_pos is not None, 'single_eval_pos is required.'
         assert isinstance(src, tuple), 'src must be a tuple (x, y).'
@@ -83,5 +100,7 @@ class TransformerModel(nn.Module):
             src = self.pos_encoder(src)
 
         output = self.transformer_encoder(src, src_mask)
-        output = self.decoder(output)
-        return output[single_eval_pos:]
+        output = self.decoder(output[single_eval_pos:])
+        mean = output[..., 0]
+        var = nn.functional.softplus(output[..., 1]) + self.min_var
+        return mean, var

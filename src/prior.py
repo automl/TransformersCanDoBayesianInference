@@ -1,12 +1,9 @@
 """GP prior (fixed hyperparameters) for training a PFN.
 """
-import time
 
 import torch
-from torch import nn
 import gpytorch
-
-from .utils import get_batch_to_dataloader, default_device
+from src.utils import get_batch_to_dataloader, default_device
 
 
 class ExactGPModel(gpytorch.models.ExactGP):
@@ -58,12 +55,6 @@ def get_model(x, y, hyperparameters):
     return model, model.likelihood
 
 
-def get_model_on_device(x, y, hyperparameters, device):
-    model, likelihood = get_model(x, y, hyperparameters)
-    model.to(device)
-    return model, likelihood
-
-
 @torch.no_grad()
 # WARNING: `default_device` is 'mps' on Apple Silicon. MPS has no float64 support, so GP prior sampling
 # can be numerically unstable for very small noise (e.g. noise=1e-4). If you see NotPSD/jitter
@@ -73,16 +64,10 @@ def get_batch(
         seq_len: int,
         num_features: int,
         device=default_device,
-        hyperparameters=None,
-        equidistant_x=False
+        hyperparameters: dict | None = None,
+        equidistant_x: bool = False
 ):
-    if isinstance(hyperparameters, (tuple, list)):
-        hyperparameters = {
-            "noise": hyperparameters[0],
-            "outputscale": hyperparameters[1],
-            "lengthscale": hyperparameters[2]}
-
-    elif hyperparameters is None:
+    if hyperparameters is None:
         hyperparameters = {
             "noise": .1,
             "outputscale": .1,
@@ -113,79 +98,4 @@ def get_batch(
     return x.transpose(0, 1), sample, sample  # x.shape = (T,B,H)
 
 
-DataLoader = get_batch_to_dataloader(get_batch, default_num_outputs=1)
-
-
-# `get_model_on_device` is a hook for building the GP at every step t. The default uses fixed
-# hyperparameters; `priors/fast_gp_mix.py` swaps in `get_fitted_model` (hyperparameters fitted
-# by marginal likelihood on x[:t], y[:t]) via functools.partial.
-@torch.no_grad()
-def evaluate(
-        x, y, y_non_noisy,
-        use_mse=False,
-        hyperparameters={},
-        get_model_on_device=get_model_on_device,
-        device=default_device,
-        step_size=1,
-        start_pos=0
-):
-    start_time = time.time()
-    losses_after_t = [.0] if start_pos == 0 else []
-    all_losses_after_t = []
-
-    args = hyperparameters.get('fast_computations', (True, True, True))
-    with (
-        gpytorch.settings.fast_computations(*args),
-        gpytorch.settings.fast_pred_var(False)
-    ):
-        for t in range(max(start_pos, 1), len(x), step_size):
-            # Given the first t points of a dataset, what is the distribution of the
-            # next point's y? Doing this for every t gives the exact-GP loss curve
-            # over context length. The Transformer is compared against that curve.
-
-            model, likelihood = get_model_on_device(
-                x[:t].transpose(0, 1),
-                y[:t].transpose(0, 1),
-                hyperparameters,
-                device)
-
-            model.eval()
-
-            f = model(x[t].unsqueeze(1))
-            l = likelihood(f)
-            means = l.mean.squeeze()
-            varis = l.covariance_matrix.squeeze()
-
-            assert len(means.shape) == len(varis.shape) == 1
-            assert len(means) == len(varis) == x.shape[1]
-
-            if use_mse:
-                c = nn.MSELoss(reduction='none')
-                ls = c(means, y[t])
-            else:
-                ls = -l.log_prob(y[t].unsqueeze(1))
-
-            losses_after_t.append(ls.mean())
-            all_losses_after_t.append(ls.flatten())
-
-        return (
-            torch.stack(all_losses_after_t).to('cpu'),
-            torch.tensor(losses_after_t).to('cpu'),
-            time.time() - start_time
-        )
-
-
-if __name__ == '__main__':
-    # Run from the repository root: `python -m src.prior`
-    hps = {"noise": .1, "outputscale": .1, "lengthscale": .1}
-    hps_eval = {**hps, 'fast_computations': (True, True, True)}
-
-    print(
-        evaluate(*get_batch(batch_size=1_000,
-                            seq_len=10,
-                            num_features=10,
-                            hyperparameters=hps),
-                 use_mse=False,
-                 hyperparameters=hps_eval)
-    )
-
+DataLoader = get_batch_to_dataloader(get_batch)

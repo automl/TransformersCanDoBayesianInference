@@ -92,60 +92,36 @@ class PriorDataLoader(DataLoader):
 
     Subclasses do not call `DataLoader.__init__`; they only implement `__len__` and `__iter__`
     (yielding `(data, targets)` batches sampled on the fly). Required interface:
-      - `__init__(num_steps, **get_batch_kwargs)`
-      - attributes (class or instance level): `num_features: int`, `num_outputs: int`
+      - `__init__(num_steps, num_features, **get_batch_kwargs)`
+      - instance attribute: `num_features: int`
       - batches are `((x, y), target_y)` with x: (seq_len, batch_size, num_features),
-        y and target_y: (seq_len, batch_size)
+        y and target_y: (seq_len, batch_size), i.e. a single scalar output per point
       - optional: `validate(model)` called periodically during training
     See `get_batch_to_dataloader` for the standard implementation.
     """
 
 
-def get_batch_to_dataloader(get_batch_method_, default_num_outputs=None, default_num_features=None):
+def get_batch_to_dataloader(get_batch_method_):
     """Wrap a prior's `get_batch` function into a DataLoader-like class.
 
-    Every iteration over an instance calls `get_batch_method_(**get_batch_kwargs)` `num_steps` times,
-    producing a fresh synthetic batch each time (nothing is cached).
+    Every iteration over an instance calls `get_batch_method_(num_features=..., **get_batch_kwargs)`
+    `num_steps` times, producing a fresh synthetic batch each time (nothing is cached).
 
-    Each step yields `((x, y), target_y)`. `train.py` reads `num_features` and `num_outputs` from the
-    instance. They are resolved as:
-      - `num_features` / `num_outputs`: taken from the constructor kwargs if given (they are then also
-        forwarded to `get_batch`), otherwise from the class attribute, i.e. the default passed here or
-        set later with `DataLoader.num_outputs = ...`. A clear error is raised if neither is available.
-        NOTE: forwarding `num_outputs` to `get_batch` only works for `get_batch` implementations that
-        either declare a `num_outputs` parameter or accept `**kwargs`. `src.prior.get_batch` does not,
-        so rely on the class-level default and never pass `num_outputs=...` to the constructor.
+    Each step yields `((x, y), target_y)`; only priors with a single scalar output per point are supported.
+    `num_features` is a required constructor argument: it is stored on the instance (read by `train.py`)
+    and forwarded to `get_batch`.
 
-    :param get_batch_method_: function `(batch_size, seq_len, ...) -> (x, y, target_y)` with
+    :param get_batch_method_: function `(batch_size, seq_len, num_features, ...) -> (x, y, target_y)` with
         x: (seq_len, batch_size, num_features), y and target_y: (seq_len, batch_size)
-    :param default_num_outputs: default number of outputs of the prior (e.g. 1 for regression)
-    :param default_num_features: default number of input features (usually passed per instance instead)
     """
 
     class DL(PriorDataLoader):
-        # Class-level defaults; can be overridden per instance via the constructor kwargs.
-        num_features = default_num_features
-        num_outputs = default_num_outputs
-
-        def __init__(self, num_steps, **get_batch_kwargs):
+        def __init__(self, num_steps, num_features, **get_batch_kwargs):
             # torch's DataLoader.__init__ is intentionally not called: there is no dataset/sampler,
             # batches are generated on the fly in `__iter__`. Only `__len__`/`__iter__` are supported.
             self.num_steps = num_steps
-            self.get_batch_kwargs = get_batch_kwargs
-
-            num_features = get_batch_kwargs.get('num_features', self.num_features)
-            num_outputs = get_batch_kwargs.get('num_outputs', self.num_outputs)
-            if num_features is None:
-                raise ValueError(
-                    f"{type(self).__qualname__}: `num_features` is unknown. Pass `num_features=...` to the constructor "
-                    f"(it is forwarded to `get_batch`) or set it via `get_batch_to_dataloader(..., num_features=...)`.")
-            if num_outputs is None:
-                raise ValueError(
-                    f"{type(self).__qualname__}: `num_outputs` is unknown. Pass `num_outputs=...` to the constructor "
-                    f"or set it via `get_batch_to_dataloader(..., num_outputs=...)`.")
-
             self.num_features = num_features
-            self.num_outputs = num_outputs
+            self.get_batch_kwargs = {'num_features': num_features, **get_batch_kwargs}
 
         @staticmethod
         def gbm(*args, **kwargs):
@@ -159,4 +135,3 @@ def get_batch_to_dataloader(get_batch_method_, default_num_outputs=None, default
             return iter(self.gbm(**self.get_batch_kwargs) for _ in range(self.num_steps))
 
     return DL
-
