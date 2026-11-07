@@ -162,7 +162,9 @@ if __name__ == '__main__':
     # GP prior (forwarded to `src.prior.get_batch` via `extra_prior_kwargs_dict`)
     parser.add_argument('--num_features', default=1, type=int)
     parser.add_argument('--noise', default=.1, type=float)
-    parser.add_argument('--outputscale', default=.1, type=float)
+    parser.add_argument('--variance', default=.1, type=float, help='Variance of the linear (dot-product) part.')
+    parser.add_argument('--bias', default=0., type=float, help='Constant kernel offset; 0 = none.')
+    parser.add_argument('--outputscale', default=.1, type=float, help='RBF output scale; 0 = no RBF part.')
     parser.add_argument('--lengthscale', default=.1, type=float)
     parser.add_argument('--prior_device', default=None, type=str,
                         help='Device for sampling the GP prior; use "cpu" if sampling is unstable on MPS.')
@@ -192,7 +194,7 @@ if __name__ == '__main__':
 
     extra_prior_kwargs_dict = {
         'num_features': kwargs.pop('num_features'),
-        'hyperparameters': {k: kwargs.pop(k) for k in ('noise', 'outputscale', 'lengthscale')},
+        'hyperparameters': {k: kwargs.pop(k) for k in ('noise', 'variance', 'bias', 'outputscale', 'lengthscale')},
     }
     prior_device = kwargs.pop('prior_device')
     if prior_device is not None:
