@@ -1,0 +1,7 @@
+# Only pyproject.toml, uv.lock, .python-version and src/ are needed for the image.
+*
+!pyproject.toml
+!uv.lock
+!.python-version
+!src/
+src/**/__pycache__

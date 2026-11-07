@@ -10,17 +10,32 @@ dependencies = [
     "torch>=2.14.1",
     "gpytorch>=1.15.2",
     "pyro-ppl>=1.9.2",
-    "scikit-learn>=1.9.1",
     "pyyaml>=6.0.3",
-    "blitz-bayesian-pytorch>=0.2.8",
-    "seaborn>=0.13.2",
-    "xgboost>=3.4.1",
     "tqdm>=4.70.1",
     "numpy>=2.5.3",
-    "openml>=0.15.1",
+]
+
+[project.optional-dependencies]
+# Baselines (sklearn / gradient boosting); not needed by `src/`
+# (scikit-learn is still installed transitively via gpytorch). Install with `uv sync --extra baselines`.
+baselines = [
+    "scikit-learn>=1.9.1",
+    "xgboost>=3.4.1",
     "catboost>=1.2.10",
+]
+# Dependencies of the original root code (priors/, datasets/, acquisition_functions.py); not needed by `src/`.
+# Install with `uv sync --extra legacy`. (blitz-bayesian-pytorch is currently not imported anywhere.)
+legacy = [
     "botorch>=0.18.1",
+    "openml>=0.15.1",
+    "blitz-bayesian-pytorch>=0.2.8",
+]
+
+[dependency-groups]
+# Notebook / plotting tools; installed by `uv sync` by default, excluded with `--no-dev` (Docker image).
+dev = [
     "jupyter>=1.1.1",
+    "seaborn>=0.13.2",
 ]
 
 [tool.uv]

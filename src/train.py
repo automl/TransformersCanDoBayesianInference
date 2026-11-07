@@ -11,6 +11,7 @@ Run from the repository root, e.g.:
     python -m src.train --num_features 1 --epochs 10 --bptt 20 --emsize 128 --nhead 2
 """
 import argparse
+import os
 import time
 
 import torch
@@ -185,6 +186,8 @@ if __name__ == '__main__':
     parser.add_argument('--steps_per_epoch', default=10, type=int)
     parser.add_argument('--batch_size', default=1000, type=int)
     parser.add_argument('--lr', '--learning_rate', default=.001, type=float)  # try also .0003, .0001
+    parser.add_argument('--save_path', default=None, type=str,
+                        help='If given, save {state_dict, args, losses} of the trained model there (torch.save).')
 
     args, _ = _parse_args(config_parser, parser)
     kwargs = dict(args.__dict__)
@@ -197,6 +200,7 @@ if __name__ == '__main__':
         'hyperparameters': {k: kwargs.pop(k) for k in ('noise', 'variance', 'bias', 'outputscale', 'lengthscale')},
     }
     prior_device = kwargs.pop('prior_device')
+    save_path = kwargs.pop('save_path')
     if prior_device is not None:
         extra_prior_kwargs_dict['device'] = prior_device
     kwargs['extra_prior_kwargs_dict'] = extra_prior_kwargs_dict
@@ -207,4 +211,12 @@ if __name__ == '__main__':
     kwargs['single_eval_pos_gen'] = get_sampler(max_eval_pos)
 
     print("ARGS for `train`:", kwargs)
-    train(prior.DataLoader, **kwargs)
+    total_loss, total_positional_losses, model = train(prior.DataLoader, **kwargs)
+
+    if save_path is not None:
+        os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+        torch.save({'state_dict': model.state_dict(),
+                    'args': args.__dict__,
+                    'total_loss': total_loss,
+                    'total_positional_losses': total_positional_losses}, save_path)
+        print(f'Saved model to {save_path}')
