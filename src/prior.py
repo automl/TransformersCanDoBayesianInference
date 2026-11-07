@@ -42,6 +42,101 @@ class ExactGPModel(gpytorch.models.ExactGP):
         return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
 
 
+class ExactGPDotProductModel(gpytorch.models.ExactGP):
+    """Exact GP with constant mean, dot-product kernel and Gaussian likelihood.
+
+    Kernel: `k(x, x') = bias + variance * x^T x'` (sklearn's `DotProduct` with `sigma_0**2 = bias`,
+    scaled by `variance`), i.e. a prior over linear functions with slope variance `variance`
+    and intercept variance `bias`. Hyperparameters are fixed at construction time, as in `ExactGPModel`.
+
+    :param train_x: training inputs, shape (batch, n, num_features), or None for a prior-only model
+    :param train_y: training targets, shape (batch, n), or None for a prior-only model.
+        A prior-only model must be put in eval mode (`model.eval()`) before calling it.
+    :param noise: observation noise variance of the Gaussian likelihood
+    :param variance: variance of the weights (scale of `x^T x'`), must be > 0
+    :param bias: constant offset of the kernel (intercept variance); `0` means no offset
+    :param min_noise: lower bound of the noise constraint
+    """
+
+    def __init__(self, train_x, train_y, noise, variance, bias=0., min_noise=1.e-9):
+        likelihood = gpytorch.likelihoods.GaussianLikelihood(
+            noise_constraint=gpytorch.constraints.GreaterThan(min_noise, initial_value=noise)
+        )
+
+        super().__init__(train_x, train_y, likelihood)
+        self.mean_module = gpytorch.means.ConstantMean()
+        self.covar_module = gpytorch.kernels.LinearKernel(
+            variance_constraint=gpytorch.constraints.Positive(initial_value=variance)
+        )
+        # A Positive constraint cannot represent 0, so the offset kernel is only added if needed.
+        if bias > 0:
+            self.covar_module = (
+                    self.covar_module +
+                    gpytorch.kernels.ConstantKernel(
+                        constant_constraint=gpytorch.constraints.Positive(initial_value=bias)
+                    )
+            )
+
+    def forward(self, x):
+        mean_x = self.mean_module(x)
+        covar_x = self.covar_module(x)
+        return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
+
+
+class ExactGPDotProductRBFModel(gpytorch.models.ExactGP):
+    """Exact GP with constant mean, dot-product + scaled RBF kernel and Gaussian likelihood.
+
+    Kernel: `k(x, x') = bias + variance * x^T x' + outputscale * exp(-||x - x'||^2 / (2 * lengthscale^2))`,
+    i.e. a random linear trend (as in `ExactGPDotProductModel`) plus independent smooth deviations
+    (as in `ExactGPModel`). Hyperparameters are fixed at construction time, as in `ExactGPModel`.
+
+    :param train_x: training inputs, shape (batch, n, num_features), or None for a prior-only model
+    :param train_y: training targets, shape (batch, n), or None for a prior-only model.
+        A prior-only model must be put in eval mode (`model.eval()`) before calling it.
+    :param noise: observation noise variance of the Gaussian likelihood
+    :param variance: variance of the linear weights (scale of `x^T x'`), must be > 0
+    :param outputscale: output scale (signal variance) of the RBF part; `0` means no RBF part
+        (equivalent to `ExactGPDotProductModel`)
+    :param lengthscale: lengthscale of the RBF kernel (shared across features); required if `outputscale > 0`
+    :param bias: constant offset of the kernel (intercept variance); `0` means no offset
+    :param min_noise: lower bound of the noise constraint
+    """
+
+    def __init__(self, train_x, train_y, noise, variance, outputscale=0., lengthscale=None, bias=0.,
+                 min_noise=1.e-9):
+        likelihood = gpytorch.likelihoods.GaussianLikelihood(
+            noise_constraint=gpytorch.constraints.GreaterThan(min_noise, initial_value=noise)
+        )
+
+        super().__init__(train_x, train_y, likelihood)
+        self.mean_module = gpytorch.means.ConstantMean()
+
+        self.covar_module = gpytorch.kernels.LinearKernel(
+            variance_constraint=gpytorch.constraints.Positive(initial_value=variance)
+        )
+
+        # Positive constraints cannot represent 0, so the RBF and offset kernels are only added if needed.
+        if outputscale > 0:
+            if lengthscale is None:
+                raise ValueError('`lengthscale` is required when `outputscale > 0`.')
+            self.covar_module = self.covar_module + gpytorch.kernels.ScaleKernel(
+                base_kernel=gpytorch.kernels.RBFKernel(
+                    lengthscale_constraint=gpytorch.constraints.Positive(initial_value=lengthscale)
+                ),
+                outputscale_constraint=gpytorch.constraints.Positive(initial_value=outputscale)
+            )
+
+        if bias > 0:
+            self.covar_module = self.covar_module + gpytorch.kernels.ConstantKernel(
+                constant_constraint=gpytorch.constraints.Positive(initial_value=bias)
+            )
+
+    def forward(self, x):
+        mean_x = self.mean_module(x)
+        covar_x = self.covar_module(x)
+        return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
+
+
 def get_model(x, y, hyperparameters):
     """ Get model and likelihood """
 
