@@ -1,0 +1,22 @@
+# GP prior with a hyperprior: every dataset (sequence) of every batch gets its own hyperparameters.
+# Each hyperparameter is a fixed number or {dist: uniform | log_uniform, low: a, high: b}.
+#   python -m src.train --config configs/gp_hyperprior.yaml --print_config
+prior:
+  num_features: 1
+  equidistant_x: false
+  hyperparameters:
+    noise: { dist: log_uniform, low: 1.e-4, high: 0.1 }
+    variance: { dist: log_uniform, low: 0.1, high: 10.0 }
+    outputscale: { dist: uniform, low: 0.0, high: 1.0 }
+    lengthscale: { dist: log_uniform, low: 0.05, high: 1.0 }
+    bias: { dist: uniform, low: 0.0, high: 1.0 }
+
+training:
+  bptt: 16
+  epochs: 50
+  steps_per_epoch: 100
+  batch_size: 500
+
+optim:
+  lr: 0.0003
+  warmup_epochs: 5

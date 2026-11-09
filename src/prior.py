@@ -1,14 +1,19 @@
-"""GP prior (fixed hyperparameters) for training a PFN.
+"""GP prior for training a PFN.
 
-`get_batch` / `DataLoader` sample from `ExactGPDotProductRBFModel` (linear trend + optional RBF part).
-`ExactGPDotProductRBFMultitaskModel` is its multi-output (ICM) extension; `get_batch_beta_binomial` uses it
+`get_batch` / `DataLoader` sample from the `ExactGPDotProductRBFModel` prior (linear trend + optional RBF
+part); every dataset can get its own hyperparameters drawn from a distribution (`sample_hyperparameters`).
+The gpytorch models (fixed hyperparameters) are used for exact GP posteriors and the Beta-Binomial prior.
+`ExactGPDotProductRBFMultitaskModel` is the multi-output (ICM) extension of `ExactGPDotProductRBFModel`; `get_batch_beta_binomial` uses it
 (2 outputs) to generate counts `(k, n)` for the Beta-Binomial PFN head.
 """
+
+import math
 
 import torch
 import gpytorch
 import gpytorch.kernels as gk
 import gpytorch.constraints as gc
+from linear_operator.utils.cholesky import psd_safe_cholesky
 from src.utils import get_batch_to_dataloader, default_device
 
 
@@ -165,6 +170,61 @@ def get_model(x, y, hyperparameters):
     return model, model.likelihood
 
 
+def sample_hyperparameters(hyperparameters, batch_size, device=None):
+    """Draw one value of every hyperparameter for each of the `batch_size` datasets.
+
+    Every entry of `hyperparameters` is either
+      - a number (the same value for all datasets),
+      - `None` (kept as `None`), or
+      - a distribution `{'dist': 'uniform' | 'log_uniform', 'low': a, 'high': b}`, sampled independently per
+        dataset. `log_uniform` (uniform in `log`, requires `a > 0`) suits scale parameters spanning orders of
+        magnitude.
+
+    :return: dict with the same keys; numbers and distributions become tensors of shape (batch_size,)
+    """
+    sampled = {}
+    for name, spec in hyperparameters.items():
+        if spec is None:
+            sampled[name] = None
+        elif isinstance(spec, dict):
+            low, high, dist = float(spec['low']), float(spec['high']), spec['dist']
+            u = torch.rand(batch_size, device=device)
+            if dist == 'uniform':
+                sampled[name] = low + (high - low) * u
+            elif dist == 'log_uniform':
+                sampled[name] = torch.exp(math.log(low) + (math.log(high) - math.log(low)) * u)
+            else:
+                raise ValueError(f'{name}: unknown distribution {dist!r} (use uniform or log_uniform)')
+        else:
+            sampled[name] = torch.full((batch_size,), float(spec), device=device)
+    return sampled
+
+
+def dot_product_rbf_covariance(x, variance, outputscale=None, lengthscale=None, bias=None):
+    """Prior covariance of `ExactGPDotProductRBFModel` with a different set of hyperparameters per dataset.
+
+    `K_b = bias_b + variance_b * x_b x_b^T + outputscale_b * exp(-||x_b - x_b'||^2 / (2 * lengthscale_b^2))`
+    (the same kernel as `dot_product_rbf_kernel`, without noise).
+
+    :param x: inputs, shape (batch_size, n, num_features)
+    :param variance, outputscale, lengthscale, bias: tensors of shape (batch_size,); `outputscale` and `bias`
+        may be `None` (= 0)
+    :return: covariance matrices, shape (batch_size, n, n)
+    """
+    def b(v):
+        return v[:, None, None]
+
+    covar = b(variance) * (x @ x.transpose(-1, -2))
+    if bias is not None:
+        covar = covar + b(bias)
+    if outputscale is not None and bool((outputscale > 0).any()):
+        if lengthscale is None:
+            raise ValueError('`lengthscale` is required when `outputscale > 0`.')
+        sq_dist = (x[:, :, None, :] - x[:, None, :, :]).square().sum(-1)
+        covar = covar + b(outputscale) * torch.exp(-.5 * sq_dist / b(lengthscale).square())
+    return covar
+
+
 @torch.no_grad()
 # WARNING: `default_device` is 'mps' on Apple Silicon. MPS has no float64 support, so GP prior sampling
 # can be numerically unstable for very small noise (e.g. noise=1e-4). If you see NotPSD/jitter
@@ -177,8 +237,11 @@ def get_batch(
         hyperparameters: dict | None = None,
         equidistant_x: bool = False
 ):
-    """Sample `batch_size` datasets from the `ExactGPDotProductRBFModel` prior (see `get_model` for the
-    hyperparameters).
+    """Sample `batch_size` datasets from the `ExactGPDotProductRBFModel` prior (zero mean).
+
+    Every dataset gets its own hyperparameters `noise`, `variance`, `outputscale`, `lengthscale`, `bias`
+    drawn by `sample_hyperparameters`, so a hyperparameter given as a distribution varies from dataset to
+    dataset (fixed numbers reproduce a single GP prior). Missing `outputscale`/`bias` default to 0.
 
     :return: x: (seq_len, batch_size, num_features), y and target_y (identical): (seq_len, batch_size)
     """
@@ -190,26 +253,21 @@ def get_batch(
             "lengthscale": .1,
             "bias": 0.}
 
-    with gpytorch.settings.fast_computations(*hyperparameters.get('fast_computations', (True, True, True))):
+    # -> (batch_size, seq_len, num_feat)
+    if equidistant_x:
+        assert num_features == 1
+        x = torch.linspace(0, 1, seq_len, device=device)[:, None].repeat(batch_size, 1, 1)
+    else:
+        x = torch.rand(batch_size, seq_len, num_features, device=device)
 
-        # -> (batch_size, seq_len, num_feat)
-        if equidistant_x:
-            assert num_features == 1
-            x = torch.linspace(0, 1, seq_len, device=device)[:, None].repeat(batch_size, 1, 1)
-        else:
-            x = torch.rand(batch_size, seq_len, num_features, device=device)
+    hp = sample_hyperparameters(hyperparameters, batch_size, device=device)
+    covar = dot_product_rbf_covariance(
+        x, hp['variance'], hp.get('outputscale'), hp.get('lengthscale'), hp.get('bias'))
+    # Observation noise on the diagonal -> covariance of y.
+    covar = covar + hp['noise'][:, None, None] * torch.eye(seq_len, device=device)
 
-        # No training data: in eval mode the model returns the GP prior N(m(x), K(x, x)) for any x.
-        # (In train mode a model without training data would raise an error.)
-        model, likelihood = get_model(None, None, hyperparameters)
-        model.to(device)
-        model.eval()
-
-        # prior_mode is redundant without training data, but makes the intent explicit.
-        with gpytorch.settings.prior_mode(True):
-            d = model(x)  # prior of the noise-free function f
-            d = likelihood(d)  # adds observation noise -> prior of y
-            sample = d.sample().transpose(0, 1)
+    chol = psd_safe_cholesky(covar)  # adds jitter if needed
+    sample = (chol @ torch.randn(batch_size, seq_len, 1, device=device)).squeeze(-1).transpose(0, 1)
 
     # -> (seq_len, batch_size, num_feat), (seq_len, batch_size), (seq_len, batch_size)
     return x.transpose(0, 1), sample, sample  # x.shape = (T,B,H)

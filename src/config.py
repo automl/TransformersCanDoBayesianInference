@@ -21,13 +21,25 @@ import yaml
 
 
 @dataclass
+class Distribution:
+    """Distribution of a prior hyperparameter, sampled independently for every dataset (sequence) of a batch
+    (see `src.prior.sample_hyperparameters`). `log_uniform` is uniform in log space (requires `low > 0`).
+
+    YAML: `noise: {dist: log_uniform, low: 1.e-4, high: 0.1}`
+    """
+    dist: Literal['uniform', 'log_uniform']
+    low: float
+    high: float
+
+
+@dataclass
 class GPHyperparameters:
-    """Hyperparameters of `src.prior.ExactGPDotProductRBFModel` (see `src.prior.get_model`)."""
-    noise: float = .1
-    variance: float = .1  # variance of the linear (dot-product) part
-    outputscale: float = .1  # RBF output scale; 0 = no RBF part
-    lengthscale: float | None = .1  # RBF lengthscale; required if outputscale > 0
-    bias: float = 0.  # constant kernel offset (intercept variance); 0 = none
+    """Hyperparameters of the GP prior (see `src.prior.get_batch`). Each is a fixed number or a `Distribution`."""
+    noise: float | Distribution = .1  # observation noise variance; must be > 0
+    variance: float | Distribution = .1  # variance of the linear (dot-product) part
+    outputscale: float | Distribution = .1  # RBF output scale; 0 = no RBF part
+    lengthscale: float | Distribution | None = .1  # RBF lengthscale; required if outputscale can be > 0
+    bias: float | Distribution = 0.  # constant kernel offset (intercept variance); 0 = none
 
 
 @dataclass
@@ -95,10 +107,34 @@ class TrainConfig:
             (not self.prior.equidistant_x or self.prior.num_features == 1,
              'prior.equidistant_x requires prior.num_features == 1'),
         ]
+        checks += _hyperparameter_checks(self.prior.hyperparameters)
         errors = [msg for ok, msg in checks if not ok]
         if errors:
             raise ValueError('Invalid config:\n  ' + '\n  '.join(errors))
         return self
+
+
+def _bounds(value):
+    """(min, max) of a fixed value or a `Distribution`."""
+    return (value.low, value.high) if isinstance(value, Distribution) else (value, value)
+
+
+def _hyperparameter_checks(hp):
+    checks = []
+    for f in fields(hp):
+        value, path = getattr(hp, f.name), f'prior.hyperparameters.{f.name}'
+        if isinstance(value, Distribution):
+            checks += [(value.low <= value.high, f'{path}: low must be <= high, got {value}'),
+                       (value.dist != 'log_uniform' or value.low > 0, f'{path}: log_uniform requires low > 0')]
+    low = {f.name: _bounds(getattr(hp, f.name))[0] for f in fields(hp) if getattr(hp, f.name) is not None}
+    checks += [
+        (low['noise'] > 0, 'prior.hyperparameters.noise must be > 0'),
+        (min(low['variance'], low['outputscale'], low['bias']) >= 0,
+         'prior.hyperparameters.variance, outputscale and bias must be >= 0'),
+        (_bounds(hp.outputscale)[1] == 0 or (hp.lengthscale is not None and low['lengthscale'] > 0),
+         'prior.hyperparameters.lengthscale must be > 0 (not null) if outputscale can be > 0'),
+    ]
+    return checks
 
 
 def config_to_dict(config):
@@ -165,13 +201,17 @@ def _coerce(value, tp, path):
         args = typing.get_args(tp)
         if value is None and type(None) in args:
             return None
+        mapping_error = None
         for arg in args:
             if arg is type(None):
                 continue
             try:
                 return _coerce(value, arg, path)
-            except (TypeError, ValueError):
-                pass
+            except (TypeError, ValueError) as e:
+                if isinstance(value, dict) and is_dataclass(arg):
+                    mapping_error = e
+        if mapping_error is not None:
+            raise mapping_error
         raise TypeError(f'{path}: expected {tp}, got {value!r}')
     if origin is Literal:
         if value in typing.get_args(tp):
