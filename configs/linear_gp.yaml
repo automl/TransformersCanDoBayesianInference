@@ -1,0 +1,21 @@
+# Linear-trend GP prior on an equidistant 1D grid.
+# Only values that differ from the defaults in `src/config.py` are listed; print the full resolved config with
+#   python -m src.train --config configs/linear_gp.yaml --print_config
+prior:
+  num_features: 1
+  equidistant_x: true
+  hyperparameters:
+    noise: 0.01
+    variance: 3.0
+    outputscale: 0.0  # no RBF part
+    bias: 0.5
+
+training:
+  bptt: 12
+  epochs: 20
+  steps_per_epoch: 10
+  batch_size: 1000
+
+optim:
+  lr: 0.001
+  warmup_epochs: 5

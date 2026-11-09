@@ -12,47 +12,51 @@ from torch.nn import TransformerEncoder, TransformerEncoderLayer
 from .utils import SeqBN
 
 
-class TransformerModel(nn.Module):
-    """PFN predicting a Gaussian `N(mean, var)` for every query point.
+class BaseTransformerModel(nn.Module):
+    """PFN Transformer backbone shared by all output heads.
 
-    The decoder produces two raw values per query point: the mean and an unconstrained value that is
-    mapped to the variance via `softplus(raw) + min_var` (smooth, positive, ~0.69 at init).
+    Encodes the `(x, y)` context and the `x` queries, runs the transformer and decodes the query positions
+    into `n_out` raw values each. Subclasses define how these values are turned into a prediction and
+    which loss is used:
 
-    :param decoder: optional factory `decoder(ninp, nhid, n_out)` with `n_out = 2`; default is an MLP
-    :param min_var: lower bound added to the predicted variance for numerical stability
+    - `postprocess(output)`: maps the raw decoder output `(num_queries, batch_size, n_out)` to the
+      model prediction returned by `forward`
+    - attribute `criterion`: loss module matching that prediction
 
-    Attribute `criterion`: `nn.GaussianNLLLoss(reduction='none', full=True)`, called as
-    `criterion(mean, target, var=var)`.
+    :param n_out: number of raw outputs of the decoder per query point
+    :param decoder: optional factory `decoder(ninp, nhid, n_out)`; default is an MLP
     """
-    n_out = 2  # mean and (raw) variance
 
     def __init__(
             self,
-            encoder, ninp, nhead, nhid, nlayers,
+            encoder, ninp, nhead, nhid, nlayers, n_out,
             dropout=0.0,
             y_encoder=None, pos_encoder=None, decoder=None,
-            input_normalization=False, min_var=1e-6
+            input_normalization=False
     ):
         super().__init__()
         self.model_type = 'Transformer'
         encoder_layers = TransformerEncoderLayer(ninp, nhead, nhid, dropout, activation='gelu')
         self.transformer_encoder = TransformerEncoder(encoder_layers, nlayers)
         self.ninp = ninp
-        self.min_var = min_var
+        self.n_out = n_out
         self.encoder = encoder
         self.y_encoder = y_encoder
         self.pos_encoder = pos_encoder
         self.decoder = (
-            decoder(ninp, nhid, self.n_out) if decoder is not None
+            decoder(ninp, nhid, n_out) if decoder is not None
             else nn.Sequential(nn.Linear(ninp, nhid),
                                nn.GELU(),
-                               nn.Linear(nhid, self.n_out))
+                               nn.Linear(nhid, n_out))
         )
         self.input_ln = SeqBN(ninp) if input_normalization else None
-        # Loss matching the predicted Gaussian; per-element losses, incl. the constant term.
-        self.criterion = nn.GaussianNLLLoss(reduction='none', full=True)
+        self.criterion = None  # set by subclasses
 
         self.init_weights()
+
+    def postprocess(self, output):
+        """Map the raw decoder output (num_queries, batch_size, n_out) to the model prediction."""
+        raise NotImplementedError
 
     @staticmethod
     def generate_D_q_matrix(sz, query_size):
@@ -78,8 +82,8 @@ class TransformerModel(nn.Module):
         :param src: tuple `(x, y)` with x: (seq_len, batch_size, num_features), y: (seq_len, batch_size)
         :param src_mask: optional attention mask; defaults to `generate_D_q_matrix`
         :param single_eval_pos: number of training (context) positions; positions from here on are queries
-        :return: `(mean, var)` of the predictive distribution at the query positions,
-            each of shape (seq_len - single_eval_pos, batch_size)
+        :return: `self.postprocess(output)` of the decoder output at the query positions,
+            output shape: (seq_len - single_eval_pos, batch_size, n_out)
         """
         assert single_eval_pos is not None, 'single_eval_pos is required.'
         assert isinstance(src, tuple), 'src must be a tuple (x, y).'
@@ -101,6 +105,79 @@ class TransformerModel(nn.Module):
 
         output = self.transformer_encoder(src, src_mask)
         output = self.decoder(output[single_eval_pos:])
+        return self.postprocess(output)
+
+
+class GaussianTransformerModel(BaseTransformerModel):
+    """PFN predicting a Gaussian `N(mean, var)` for every query point.
+
+    The decoder produces two raw values per query point: the mean and an unconstrained value that is
+    mapped to the variance via `softplus(raw) + min_var` (smooth, positive, ~0.69 at init).
+
+    :param min_var: lower bound added to the predicted variance for numerical stability
+    Other parameters: see `BaseTransformerModel` (`n_out` is fixed to 2).
+
+    Attribute `criterion`: `nn.GaussianNLLLoss(reduction='none', full=True)`, called as
+    `criterion(mean, target, var=var)`.
+    """
+
+    def __init__(self, encoder, ninp, nhead, nhid, nlayers, min_var=1e-6, **kwargs):
+        super().__init__(encoder, ninp, nhead, nhid, nlayers, n_out=2, **kwargs)
+        self.min_var = min_var
+        # Loss matching the predicted Gaussian; per-element losses, incl. the constant term.
+        self.criterion = nn.GaussianNLLLoss(reduction='none', full=True)
+
+    def postprocess(self, output):
+        """:return: `(mean, var)`, each of shape (num_queries, batch_size)"""
         mean = output[..., 0]
         var = nn.functional.softplus(output[..., 1]) + self.min_var
         return mean, var
+
+
+class BetaBinomialNLLLoss(nn.Module):
+    """Negative log-likelihood of a Beta-Binomial distribution (no reduction).
+
+    `k ~ BetaBinomial(n, alpha, beta)`, i.e. `p ~ Beta(alpha, beta)`, `k ~ Binomial(n, p)`:
+
+        log P(k) = log C(n, k) + lbeta(k + alpha, n - k + beta) - lbeta(alpha, beta)
+
+    with `lbeta(a, b) = lgamma(a) + lgamma(b) - lgamma(a + b)`.
+    Called as `criterion(alpha, beta, target, total_count)`; all arguments broadcast against each other,
+    `target` (k) and `total_count` (n) may be float tensors holding integer values with `0 <= k <= n`.
+    """
+
+    @staticmethod
+    def _lbeta(a, b):
+        return torch.lgamma(a) + torch.lgamma(b) - torch.lgamma(a + b)
+
+    def forward(self, alpha, beta, target, total_count):
+        k = torch.as_tensor(target, dtype=alpha.dtype, device=alpha.device)
+        n = torch.as_tensor(total_count, dtype=alpha.dtype, device=alpha.device)
+        log_binom = torch.lgamma(n + 1) - torch.lgamma(k + 1) - torch.lgamma(n - k + 1)
+        log_prob = log_binom + self._lbeta(k + alpha, n - k + beta) - self._lbeta(alpha, beta)
+        return -log_prob
+
+
+class BetaBinomialTransformerModel(BaseTransformerModel):
+    """PFN predicting a Beta-Binomial distribution `BetaBinomial(n, alpha, beta)` for every query point.
+
+    The decoder produces two raw values per query point, mapped to the concentrations via
+    `alpha = softplus(raw_0) + min_concentration`, `beta = softplus(raw_1) + min_concentration`.
+    The number of trials `n` is not predicted; it is passed to the loss together with the target.
+
+    :param min_concentration: lower bound added to alpha and beta for numerical stability
+    Other parameters: see `BaseTransformerModel` (`n_out` is fixed to 2).
+
+    Attribute `criterion`: `BetaBinomialNLLLoss()`, called as `criterion(alpha, beta, target, total_count)`.
+    """
+
+    def __init__(self, encoder, ninp, nhead, nhid, nlayers, min_concentration=1e-6, **kwargs):
+        super().__init__(encoder, ninp, nhead, nhid, nlayers, n_out=2, **kwargs)
+        self.min_concentration = min_concentration
+        self.criterion = BetaBinomialNLLLoss()
+
+    def postprocess(self, output):
+        """:return: `(alpha, beta)`, each of shape (num_queries, batch_size)"""
+        alpha = nn.functional.softplus(output[..., 0]) + self.min_concentration
+        beta = nn.functional.softplus(output[..., 1]) + self.min_concentration
+        return alpha, beta

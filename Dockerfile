@@ -6,11 +6,12 @@
 #
 # Build (on an Apple Silicon Mac, cross-build for the Linux/x86_64 GPU machine):
 #   docker buildx build --platform linux/amd64 -t pfn-train .
-# Run on the GPU machine (the trained model is written to the mounted ./outputs directory):
+# Run on the GPU machine (the run folder with config.yaml, metadata.yaml and model.pt is written to the
+# mounted ./outputs directory; configs/ is part of the image):
 #   docker run --rm --gpus all -v "$PWD/outputs:/app/outputs" pfn-train \
-#       --epochs 50 --steps_per_epoch 200 --save_path outputs/model.pt
-# A YAML config can be mounted and passed with `--config`, e.g.
-#   -v "$PWD/configs:/app/configs" pfn-train --config configs/run.yaml --save_path outputs/model.pt
+#       --config configs/linear_gp.yaml training.epochs=50 --output_dir outputs/run1
+# New configs can be used without rebuilding by mounting them, e.g.
+#   -v "$PWD/configs:/app/configs" pfn-train --config configs/my_run.yaml --output_dir outputs/run2
 
 FROM python:3.12-slim-bookworm
 
@@ -36,6 +37,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 ENV PATH="/app/.venv/bin:$PATH"
 
 COPY src ./src
+COPY configs ./configs
 
 ENTRYPOINT ["python", "-m", "src.train"]
 CMD ["--help"]

@@ -7,20 +7,31 @@ Refactored copy of `train.py` with fixed choices:
     criterion:    `model.criterion` = nn.GaussianNLLLoss(reduction='none', full=True); the model returns
                   (mean, variance) for every query point (variance mapped to be positive inside the model)
 
+All settings are defined in `src/config.py` (`TrainConfig`, the single source of default values).
 Run from the repository root, e.g.:
-    python -m src.train --num_features 1 --epochs 10 --bptt 20 --emsize 128 --nhead 2
+    python -m src.train --config configs/linear_gp.yaml training.epochs=10 model.emsize=128 --output_dir outputs/run1
+    python -m src.train --config configs/linear_gp.yaml --print_config   # show the resolved config and exit
+
+With `--output_dir`, the run folder contains `config.yaml` (resolved config, reusable with `--config`),
+`metadata.yaml` (git commit, library versions, final losses) and `model.pt` (see `load_checkpoint`).
 """
 import argparse
+import datetime
 import os
+import platform
+import random
+import subprocess
 import time
 
+import gpytorch
 import torch
 import yaml
 from torch import nn
 
 from src import prior
+from src.config import TrainConfig, config_from_dict, config_to_dict, load_config, save_config
 from src.positional_encodings import NoPositionalEncoding
-from src.transformer import TransformerModel
+from src.transformer import GaussianTransformerModel
 from src.utils import (
     default_device,
     get_cosine_schedule_with_warmup,
@@ -30,58 +41,89 @@ from src.utils import (
 )
 
 
+def build_model(config: TrainConfig, decoder=None):
+    """Create the (untrained) `GaussianTransformerModel` described by `config`."""
+    m = config.model
+
+    return GaussianTransformerModel(
+        encoder=nn.Linear(config.prior.num_features, m.emsize),
+        ninp=m.emsize,
+        nhead=m.nhead,
+        nhid=m.nhid or 2 * m.emsize,
+        nlayers=m.nlayers,
+        dropout=m.dropout,
+        y_encoder=nn.Linear(1, m.emsize),
+        pos_encoder=NoPositionalEncoding(m.emsize, config.training.bptt * 2),  # arguments don't matter
+        decoder=decoder,
+        input_normalization=m.input_normalization,
+        min_var=m.min_var)
+
+
 def train(
+        config: TrainConfig | None = None,
         priordataloader_class=prior.DataLoader,
-        emsize=200, nhid=200, nlayers=6, nhead=2, dropout=0.2,
-        epochs=10, steps_per_epoch=100, batch_size=200,
-        bptt=10,
-        lr=None, warmup_epochs=10,
-        input_normalization=False, decoder=None, extra_prior_kwargs_dict=None,
-        scheduler=get_cosine_schedule_with_warmup, load_weights_from_this_state_dict=None,
-        single_eval_pos_gen=None, device=None, aggregate_k_gradients=1, verbose=True):
+        decoder=None,
+        scheduler=get_cosine_schedule_with_warmup,
+        load_weights_from_this_state_dict=None,
+        verbose=True
+):
     """Train a PFN with Gaussian NLL loss.
 
-    :param priordataloader_class: DataLoader class of the prior (default: GP prior from `src/prior.py`)
-    :param bptt: sequence length (training + query points) of each sampled dataset
-    :param extra_prior_kwargs_dict: extra kwargs for the prior DataLoader, forwarded to `get_batch`,
-        e.g. `{'num_features': 1, 'hyperparameters': {...}}`. `num_features` is required.
-    :param single_eval_pos_gen: int or callable returning the number of training points per batch,
-        must be in `[0, bptt)`. Default: `get_weighted_single_eval_pos_sampler(bptt)`.
-    :param device: device for the model; default `default_device` (CUDA, MPS, then CPU)
+    :param config: all (serializable) settings, see `src/config.py`; default `TrainConfig()`.
+        If `config.training.seed` is None, a random seed is drawn and written into `config` (in place),
+        so the config always records the seed that was used.
+    :param priordataloader_class: DataLoader class of the prior, constructed with `config.prior`
+        (default: GP prior from `src/prior.py`)
+    :param decoder: optional decoder factory `decoder(ninp, nhid, n_out)` (not part of the config)
+    :param scheduler: factory `scheduler(optimizer, warmup_epochs, epochs)`, stepped once per epoch
     :return: (mean loss of the last epoch, mean loss per single_eval_pos of the last epoch, model on CPU)
     """
+    config = config or TrainConfig()
+    config.validate()
+    p, o, t = config.prior, config.optim, config.training
 
-    device = device or default_device
+    if t.seed is None:
+        t.seed = random.SystemRandom().randrange(2 ** 31)
+    # The single_eval_pos samplers use python's `random`, everything else uses torch.
+    random.seed(t.seed)
+    torch.manual_seed(t.seed)
+    print(f'Using seed {t.seed}')
+
+    device = t.device or default_device
     print(f'Using {device} device')
 
-    extra_prior_kwargs_dict = extra_prior_kwargs_dict or {}
-    if single_eval_pos_gen is None:
-        single_eval_pos_gen = get_weighted_single_eval_pos_sampler(bptt)
+    bptt = t.bptt
+    steps_per_epoch = t.steps_per_epoch
+    epochs = t.epochs
+    aggregate_k_gradients = o.aggregate_k_gradients
+    get_sampler = {'weighted': get_weighted_single_eval_pos_sampler,
+                   'uniform': get_uniform_single_eval_pos_sampler}[t.eval_pos_sampling]
+    single_eval_pos_gen = get_sampler(t.max_eval_pos or bptt)
 
+    prior_kwargs = {'num_features': p.num_features,
+                    'equidistant_x': p.equidistant_x,
+                    'hyperparameters': config_to_dict(config)['prior']['hyperparameters']}
+    if p.device is not None:
+        prior_kwargs['device'] = p.device
     dl = priordataloader_class(
         num_steps=steps_per_epoch,
-        batch_size=batch_size,
+        batch_size=t.batch_size,
         seq_len=bptt,
-        **extra_prior_kwargs_dict)
+        **prior_kwargs)
 
-    model = TransformerModel(
-        encoder=nn.Linear(dl.num_features, emsize),
-        ninp=emsize, nhead=nhead, nhid=nhid, nlayers=nlayers, dropout=dropout,
-        y_encoder=nn.Linear(1, emsize),
-        pos_encoder=NoPositionalEncoding(emsize, bptt * 2),  # arguments don't matter
-        decoder=decoder,
-        input_normalization=input_normalization)
+    model = build_model(config, decoder=decoder)
 
     if load_weights_from_this_state_dict is not None:
         model.load_state_dict(load_weights_from_this_state_dict)
     model.to(device)
 
+    lr = o.lr
     if lr is None:
         lr = get_openai_lr(model)
         print(f"Using OpenAI max lr of {lr}.")
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    scheduler = scheduler(optimizer, warmup_epochs, epochs)
+    scheduler = scheduler(optimizer, o.warmup_epochs, epochs)
 
     def train_epoch():
         model.train()
@@ -96,7 +138,7 @@ def train(
             time_to_get_batch = time.time() - before_get_batch
             before_forward = time.time()
 
-            single_eval_pos = single_eval_pos_gen() if callable(single_eval_pos_gen) else single_eval_pos_gen
+            single_eval_pos = single_eval_pos_gen()
             assert 0 <= single_eval_pos < bptt, f'single_eval_pos must be in [0, {bptt}), got {single_eval_pos}.'
 
             # each (bptt - single_eval_pos, batch_size)
@@ -144,79 +186,86 @@ def train(
     return total_loss, total_positional_losses, model.to('cpu')
 
 
-def _parse_args(config_parser, parser):
-    # Values from a YAML config file (--config) become defaults; command line arguments override them.
-    args_config, remaining = config_parser.parse_known_args()
-    if args_config.config:
-        with open(args_config.config, 'r') as f:
-            parser.set_defaults(**yaml.safe_load(f))
-    args = parser.parse_args(remaining)
-    args_text = yaml.safe_dump(args.__dict__, default_flow_style=False)
-    return args, args_text
+def run_metadata():
+    """Information about the environment of a run (for reproducibility)."""
+
+    def git(*args):
+        try:
+            out = subprocess.run(['git', *args], capture_output=True, text=True, timeout=10,
+                                 cwd=os.path.dirname(os.path.abspath(__file__)))
+            return out.stdout.strip() if out.returncode == 0 else None
+        except (OSError, subprocess.SubprocessError):
+            return None  # e.g. no git / no repository (Docker image)
+
+    status = git('status', '--porcelain')
+    return {
+        'timestamp': datetime.datetime.now().isoformat(timespec='seconds'),
+        'git_commit': git('rev-parse', 'HEAD'),
+        'git_dirty': None if status is None else bool(status),
+        'python': platform.python_version(),
+        'torch': str(torch.__version__),  # TorchVersion (str subclass) is not YAML-serializable
+        'gpytorch': str(gpytorch.__version__),
+        'cuda': torch.version.cuda,
+    }
+
+
+def save_run(output_dir, config, model, total_loss, total_positional_losses, metadata):
+    """Write `config.yaml`, `metadata.yaml` and `model.pt` to `output_dir`."""
+    os.makedirs(output_dir, exist_ok=True)
+    metadata = {**metadata, 'total_loss': total_loss, 'total_positional_losses': total_positional_losses}
+    # model.pt first: it is the most valuable file if anything below fails.
+    torch.save({'state_dict': model.state_dict(),
+                'config': config_to_dict(config),
+                'metadata': metadata}, os.path.join(output_dir, 'model.pt'))
+    save_config(config, os.path.join(output_dir, 'config.yaml'))
+    with open(os.path.join(output_dir, 'metadata.yaml'), 'w') as f:
+        yaml.safe_dump(metadata, f, sort_keys=False)
+    print(f'Saved run to {output_dir}')
+
+
+def load_checkpoint(path, device='cpu'):
+    """Load a model saved by `save_run` (`path`: run folder or its `model.pt`).
+
+    :return: (model in eval mode, `TrainConfig`, metadata dict)
+    """
+    if os.path.isdir(path):
+        path = os.path.join(path, 'model.pt')
+    checkpoint = torch.load(path, map_location=device, weights_only=True)
+    config = config_from_dict(checkpoint['config'])
+    model = build_model(config)
+    model.load_state_dict(checkpoint['state_dict'])
+    return model.to(device).eval(), config, checkpoint['metadata']
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        description='Train a PFN on the GP prior. Settings: defaults in src/config.py <- --config files '
+                    '<- dotted overrides.')
+    parser.add_argument('--config', action='append', default=[],
+                        help='YAML config file; can be given several times (merged in order).')
+    parser.add_argument('--output_dir', default=None,
+                        help='Run folder for config.yaml, metadata.yaml and model.pt; must not contain a model.pt.')
+    parser.add_argument('--print_config', action='store_true', help='Print the resolved config and exit.')
+    parser.add_argument('overrides', nargs='*', metavar='key.sub=value',
+                        help='Override single values, e.g. model.emsize=256 prior.hyperparameters.noise=0.01')
+    return parser.parse_intermixed_args(argv)
 
 
 if __name__ == '__main__':
-    config_parser = argparse.ArgumentParser(description='Only used as a first parser for the config file path.')
-    config_parser.add_argument('--config')
-    parser = argparse.ArgumentParser()
+    args = parse_args()
+    config = load_config(*args.config, overrides=args.overrides)
 
-    # GP prior (forwarded to `src.prior.get_batch` via `extra_prior_kwargs_dict`)
-    parser.add_argument('--num_features', default=1, type=int)
-    parser.add_argument('--noise', default=.1, type=float)
-    parser.add_argument('--variance', default=.1, type=float, help='Variance of the linear (dot-product) part.')
-    parser.add_argument('--bias', default=0., type=float, help='Constant kernel offset; 0 = none.')
-    parser.add_argument('--outputscale', default=.1, type=float, help='RBF output scale; 0 = no RBF part.')
-    parser.add_argument('--lengthscale', default=.1, type=float)
-    parser.add_argument('--prior_device', default=None, type=str,
-                        help='Device for sampling the GP prior; use "cpu" if sampling is unstable on MPS.')
+    if args.print_config:
+        print(yaml.safe_dump(config_to_dict(config), sort_keys=False), end='')
+        raise SystemExit
 
-    parser.add_argument('--bptt', default=10, type=int)
-    parser.add_argument('--epochs', default=200, type=int)
-    parser.add_argument('--warmup_epochs', default=50, type=int)
-    parser.add_argument('--max_eval_pos', default=None, type=int,
-                        help='single_eval_pos is sampled from range(max_eval_pos); default: bptt.')
-    parser.add_argument('--eval_pos_sampling', default='weighted', choices=['weighted', 'uniform'])
+    # Fail before training rather than after it.
+    if args.output_dir is not None and os.path.exists(os.path.join(args.output_dir, 'model.pt')):
+        raise FileExistsError(f'{args.output_dir} already contains a model.pt; choose another --output_dir.')
 
-    # these can likely be mostly left at defaults
-    parser.add_argument('--emsize', default=512, type=int)  # sometimes even larger is better e.g. 1024
-    parser.add_argument('--nlayers', default=6, type=int)
-    parser.add_argument('--nhid', default=None, type=int)  # 2*emsize is the default
-    parser.add_argument('--nhead', default=4, type=int)  # nhead = emsize / 64 in the original paper
-    parser.add_argument('--dropout', default=.0, type=float)
-    parser.add_argument('--steps_per_epoch', default=10, type=int)
-    parser.add_argument('--batch_size', default=1000, type=int)
-    parser.add_argument('--lr', '--learning_rate', default=.001, type=float)  # try also .0003, .0001
-    parser.add_argument('--save_path', default=None, type=str,
-                        help='If given, save {state_dict, args, losses} of the trained model there (torch.save).')
+    print('Config:\n' + yaml.safe_dump(config_to_dict(config), sort_keys=False))
+    metadata = run_metadata()
+    total_loss, total_positional_losses, model = train(config)
 
-    args, _ = _parse_args(config_parser, parser)
-    kwargs = dict(args.__dict__)
-
-    if kwargs['nhid'] is None:
-        kwargs['nhid'] = 2 * kwargs['emsize']
-
-    extra_prior_kwargs_dict = {
-        'num_features': kwargs.pop('num_features'),
-        'hyperparameters': {k: kwargs.pop(k) for k in ('noise', 'variance', 'bias', 'outputscale', 'lengthscale')},
-    }
-    prior_device = kwargs.pop('prior_device')
-    save_path = kwargs.pop('save_path')
-    if prior_device is not None:
-        extra_prior_kwargs_dict['device'] = prior_device
-    kwargs['extra_prior_kwargs_dict'] = extra_prior_kwargs_dict
-
-    max_eval_pos = kwargs.pop('max_eval_pos') or kwargs['bptt']
-    get_sampler = {'weighted': get_weighted_single_eval_pos_sampler,
-                   'uniform': get_uniform_single_eval_pos_sampler}[kwargs.pop('eval_pos_sampling')]
-    kwargs['single_eval_pos_gen'] = get_sampler(max_eval_pos)
-
-    print("ARGS for `train`:", kwargs)
-    total_loss, total_positional_losses, model = train(prior.DataLoader, **kwargs)
-
-    if save_path is not None:
-        os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
-        torch.save({'state_dict': model.state_dict(),
-                    'args': args.__dict__,
-                    'total_loss': total_loss,
-                    'total_positional_losses': total_positional_losses}, save_path)
-        print(f'Saved model to {save_path}')
+    if args.output_dir is not None:
+        save_run(args.output_dir, config, model, total_loss, total_positional_losses, metadata)

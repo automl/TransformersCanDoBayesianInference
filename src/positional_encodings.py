@@ -7,7 +7,7 @@ Interface shared by all encodings:
     forward(x: (seq_len, batch_size, d_model)) -> x with positional information added, same shape
 
 NOTE: the PFN is meant to be invariant to the order of the training (context) points, so no
-positional information is added. Passing `pos_encoder=None` to `TransformerModel` is equivalent.
+positional information is added. Passing `pos_encoder=None` to `BaseTransformerModel` is equivalent.
 """
 from torch import nn
 
