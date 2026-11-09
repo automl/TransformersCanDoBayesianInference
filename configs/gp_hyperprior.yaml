@@ -11,8 +11,14 @@ prior:
     lengthscale: { dist: log_uniform, low: 0.05, high: 1.0 }
     bias: { dist: uniform, low: 0.0, high: 1.0 }
 
+model:
+  emsize: 128
+  nhid: 256
+  nlayers: 4
+  nhead: 4
+
 training:
-  bptt: 16
+  bptt: 12
   epochs: 50
   steps_per_epoch: 100
   batch_size: 500
